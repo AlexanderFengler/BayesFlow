@@ -14,6 +14,31 @@ def _constrained_parameters(transform, unconstrained):
     return transform.constrain_parameters(transform.split_parameters(unconstrained))
 
 
+@pytest.mark.parametrize(
+    ("transform_kwargs", "expected_domain"),
+    [
+        ({}, (-3.0, 3.0, -3.0, 3.0)),
+        ({"default_domain": (-5.0, 5.0, -5.0, 5.0)}, (-5.0, 5.0, -5.0, 5.0)),
+    ],
+    ids=["default-domain", "wide-domain"],
+)
+def test_zero_parameters_realize_configured_domain_after_serialization(transform_kwargs, expected_domain):
+    transform = SplineTransform(**transform_kwargs)
+    serialized = keras.saving.serialize_keras_object(transform)
+    transforms = (transform, keras.saving.deserialize_keras_object(serialized))
+
+    for candidate in transforms:
+        unconstrained = _unconstrained_parameters(candidate, batch_size=2, dimensions=3)
+        parameters = _constrained_parameters(candidate, unconstrained)
+        horizontal_edges = keras.ops.convert_to_numpy(parameters["horizontal_edges"])
+        vertical_edges = keras.ops.convert_to_numpy(parameters["vertical_edges"])
+
+        np.testing.assert_array_equal(horizontal_edges[..., 0], expected_domain[0])
+        np.testing.assert_array_equal(horizontal_edges[..., -1], expected_domain[1])
+        np.testing.assert_array_equal(vertical_edges[..., 0], expected_domain[2])
+        np.testing.assert_array_equal(vertical_edges[..., -1], expected_domain[3])
+
+
 def test_bin_indices_expose_forward_and_inverse_tail_occupancy():
     transform = SplineTransform(bins=4)
     horizontal_edges = np.broadcast_to(np.asarray([-3.0, -1.0, 0.0, 1.0, 3.0], dtype=np.float32), (1, 7, 5)).copy()

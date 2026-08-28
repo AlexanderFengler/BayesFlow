@@ -99,7 +99,9 @@ class SplineTransform(Transform):
         if self.default_height < self.min_height:
             raise ValueError(f"Default height must be greater than minimum height ({self.min_height}).")
 
-        self._shift = np.sinh(1.0) * np.log(np.e - 1.0)
+        # Inverse softplus of sinh(1), so arcsinh(softplus(_shift)) == 1.
+        # This makes zero subnet outputs realize the configured default domain.
+        self._shift = np.log(np.expm1(np.sinh(1.0)))
 
     def get_config(self) -> dict:
         return {
