@@ -174,6 +174,21 @@ class SplineTransform(Transform):
 
         return constrained_parameters
 
+    def bin_indices(self, values: Tensor, parameters: dict[str, Tensor], inverse: bool = False) -> Tensor:
+        """Locate values relative to the learned spline domain without changing state.
+
+        ``parameters`` must be the constrained mapping returned by
+        :meth:`constrain_parameters`. Returned indices are zero-based within the spline,
+        ``-1`` in the lower affine branch (including the lower boundary), and ``bins`` in
+        the upper affine tail. For inverse evaluation, locations are computed against the
+        vertical rather than horizontal edges. This is sufficient for callers to aggregate
+        domain/tail counts and learned-bin occupancy without executing or modifying the
+        transform.
+        """
+        edge_name = "vertical_edges" if inverse else "horizontal_edges"
+        insertion_indices = searchsorted(parameters[edge_name], keras.ops.expand_dims(values, axis=-1))
+        return keras.ops.squeeze(insertion_indices, axis=-1) - 1
+
     def _forward(self, x: Tensor, parameters: dict[str, Tensor]) -> tuple[Tensor, Tensor]:
         # avoid side effects for mutable args
         parameters = parameters.copy()
@@ -185,17 +200,14 @@ class SplineTransform(Transform):
         affine_log_jac = keras.ops.broadcast_to(keras.ops.log(scale), keras.ops.shape(affine))
 
         # spline transform for inside
-        bins = searchsorted(parameters["horizontal_edges"], keras.ops.expand_dims(x, axis=-1))
-        bins = keras.ops.squeeze(bins, axis=-1)
-        inside = (bins > 0) & (bins <= self.bins)
+        bins = self.bin_indices(x, parameters)
+        inside = (bins >= 0) & (bins < self.bins)
 
-        upper = bins
-        lower = upper - 1
+        lower = bins
 
         # we need to mask out invalid bins to be backend-agnostic
-        # this does not matter since we will overwrite these values with the affine values anyway
-        upper = keras.ops.where(inside, upper, keras.ops.ones_like(upper))
         lower = keras.ops.where(inside, lower, keras.ops.zeros_like(lower))
+        upper = lower + 1
 
         # need to expand the dimensions to match the shape of the parameters for take_along_axis
         upper = keras.ops.expand_dims(upper, axis=-1)
@@ -217,8 +229,11 @@ class SplineTransform(Transform):
 
         parameters = {"edges": edges, "derivatives": derivatives}
 
-        # compute the spline and jacobian
-        spline, spline_log_jac = self.method_fn(x, **parameters)
+        # Out-of-domain values are discarded below, but passing them through the spline can
+        # still overflow and contaminate gradients before ``where`` selects the affine tail.
+        # Evaluate the unused branch at a valid boundary value instead.
+        spline_input = keras.ops.where(inside, x, edges["left"])
+        spline, spline_log_jac = self.method_fn(spline_input, **parameters)
 
         z = keras.ops.where(inside, spline, affine)
         log_jac = keras.ops.where(inside, spline_log_jac, affine_log_jac)
@@ -238,17 +253,14 @@ class SplineTransform(Transform):
         affine_log_jac = keras.ops.broadcast_to(-keras.ops.log(scale), keras.ops.shape(affine))
 
         # spline transform for inside
-        bins = searchsorted(parameters["vertical_edges"], keras.ops.expand_dims(z, axis=-1))
-        bins = keras.ops.squeeze(bins, axis=-1)
-        inside = (bins > 0) & (bins <= self.bins)
+        bins = self.bin_indices(z, parameters, inverse=True)
+        inside = (bins >= 0) & (bins < self.bins)
 
-        upper = bins
-        lower = upper - 1
+        lower = bins
 
         # we need to mask out invalid bins to be backend-agnostic
-        # this does not matter since we will overwrite these values with the affine values anyway
-        upper = keras.ops.where(inside, upper, keras.ops.ones_like(upper))
         lower = keras.ops.where(inside, lower, keras.ops.zeros_like(lower))
+        upper = lower + 1
 
         # need to expand the dimensions to match the shape of the parameters for take_along_axis
         upper = keras.ops.expand_dims(upper, axis=-1)
@@ -270,8 +282,10 @@ class SplineTransform(Transform):
 
         parameters = {"edges": edges, "derivatives": derivatives}
 
-        # compute the spline and jacobian
-        spline, spline_log_jac = self.method_fn(z, **parameters, inverse=True)
+        # See the forward path: an unused extreme tail must not reach the rational-quadratic
+        # arithmetic, where it can produce non-finite intermediates and gradients.
+        spline_input = keras.ops.where(inside, z, edges["bottom"])
+        spline, spline_log_jac = self.method_fn(spline_input, **parameters, inverse=True)
 
         x = keras.ops.where(inside, spline, affine)
         log_jac = keras.ops.where(inside, spline_log_jac, affine_log_jac)
