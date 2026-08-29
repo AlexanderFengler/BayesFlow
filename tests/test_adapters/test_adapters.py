@@ -264,6 +264,35 @@ def test_log_det_jac(adapter_log_det_jac, random_data):
     assert np.allclose(log_det_jac["u"], u1[:, 0])
 
 
+def test_concatenate_log_det_jac_preserves_declared_key_order():
+    class FixedHashString(str):
+        def __new__(cls, value, hash_value):
+            instance = super().__new__(cls, value)
+            instance.hash_value = hash_value
+            return instance
+
+        def __hash__(self):
+            return self.hash_value
+
+    # Fixed hashes make set order unit, negative, large. That order loses the unit
+    # contribution, while the declared large, negative, unit order retains it.
+    large = FixedHashString("large", 2)
+    negative = FixedHashString("negative", 1)
+    unit = FixedHashString("unit", 0)
+    transform = bf.adapters.transforms.Concatenate([large, negative, unit], into="combined")
+
+    result = transform.log_det_jac(
+        {},
+        {
+            large: np.asarray([1.0e16]),
+            negative: np.asarray([-1.0e16]),
+            unit: np.asarray([1.0]),
+        },
+    )
+
+    np.testing.assert_array_equal(result["combined"], np.asarray([1.0]))
+
+
 def test_log_det_jac_inverse(adapter_log_det_jac_inverse, random_data):
     d, forward_log_det_jac = adapter_log_det_jac_inverse(random_data, log_det_jac=True)
     d, inverse_log_det_jac = adapter_log_det_jac_inverse(d, inverse=True, log_det_jac=True)

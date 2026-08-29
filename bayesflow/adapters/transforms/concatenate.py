@@ -137,9 +137,10 @@ class Concatenate(Transform):
 
             return log_det_jac
 
-        required_keys = set(self.keys)
-        available_keys = set(log_det_jac.keys())
-        common_keys = available_keys & required_keys
+        # Jacobian addition is not associative in floating-point arithmetic. Preserve the
+        # user-declared concatenation order instead of iterating a hash-randomized set so
+        # identical inputs produce identical densities across fresh Python processes.
+        common_keys = [key for key in self.keys if key in log_det_jac]
 
         if len(common_keys) == 0:
             return log_det_jac
